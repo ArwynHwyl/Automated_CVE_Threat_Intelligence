@@ -1,6 +1,8 @@
 ### Link
 **https://automated-cve-threat-intelligence.onrender.com**
 
+### Motivation
+จริงๆตอนแรกผมกะจะทำเป็น Microsoft Ecosystem ทั้งหมดเลย Power page + automate + dataverse แต่ว่าผมลองใช้ Power Page แล้วมันไม่ถนัด เลยตัดสินใจไปทำ Custom ดีกว่าแต่ยังใช้ Dataverse + Automated อยู่เพราะว่ามันเหมือนเป็น Database กับ Business logic ไปในตัวแล้ว ทำให้ไม่ต้องลงแรงงมโค๊ดเยอะมาก แล้วเราจะมาปรับแต่งพวกCSS หรือ Proxy ได้ง่ายกว่าถึงสุดท้ายมัันจะมีปัญหาเรื่อง Tenant แต่ก็มุดเอา Dataverse มาแบบโต้งๆได้ เพราะคิดว่ามันไม่น่ามีปัญหาอะไรมันเป็นข้อมูลที่ไม่ได้ Sensitive   
 ### Architecture & Tech Stack
 * Data Source: NVD API  
 * Database: Microsoft Dataverse  
