@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Automated Threat Intelligence Feed</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background: linear-gradient(135deg, #0a0a0f 0%, #0f172a 50%, #0a0a0f 100%); }
+        .glow-green { text-shadow: 0 0 10px #00ff41, 0 0 20px #00ff41; }
+        .glow-red { text-shadow: 0 0 10px #dc2626, 0 0 20px #dc2626; }
+        .card:hover { box-shadow: 0 0 20px rgba(0, 255, 65, 0.2); }
+        .spinner { border: 3px solid #1e293b; border-top: 3px solid #00ff41; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        @keyframes blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
+        .cursor::after { content: '█'; animation: blink 1s infinite; color: #00ff41; }
+    </style>
+</head>
+<body class="min-h-screen text-gray-100">
+    <!-- Header -->
+    <header class="border-b border-gray-800 bg-black/80">
+        <div class="max-w-7xl mx-auto px-4 py-12 text-center">
+            <h1 class="font-mono text-3xl md:text-5xl font-bold tracking-tight">
+                <span class="text-green-400 glow-green">Automated</span>
+                <span class="text-gray-100"> Threat Intelligence </span>
+                <span class="text-red-500 glow-red">Feed</span>
+            </h1>
+            <p class="font-mono text-sm text-gray-400 mt-4">
+                <span class="text-green-400">$</span> Developed by <span class="text-green-400">Arwyn Hwyl</span> 
+                | Live CVE Data via <span class="text-red-500">Dataverse</span> Pipeline
+                <span class="cursor"></span>
+            </p>
+            <div class="flex items-center justify-center gap-6 mt-4 text-xs font-mono text-gray-500">
+                <span class="flex items-center gap-2">
+                    <span class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
+                    SYSTEM ONLINE
+                </span>
+                <span>|</span>
+                <span id="cve-count">Loading...</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main -->
+    <main class="max-w-7xl mx-auto px-4 py-8">
+        <!-- Search -->
+        <div class="sticky top-0 z-40 bg-black/95 py-4 border-b border-gray-800">
+            <input type="text" id="search" placeholder="Search CVE ID, CWE, or description..."
+                class="w-full max-w-2xl mx-auto block px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg font-mono text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-green-400">
+            <!-- Filter Buttons -->
+            <div class="flex flex-wrap justify-center gap-2 mt-4">
+                <button onclick="filterBy('ALL')" id="filter-ALL" class="filter-btn active px-4 py-2 rounded-lg font-mono text-xs border border-gray-600 bg-green-400 text-black">ALL</button>
+                <button onclick="filterBy('CRITICAL')" id="filter-CRITICAL" class="filter-btn px-4 py-2 rounded-lg font-mono text-xs border border-red-500/50 bg-red-900/30 text-red-400 hover:bg-red-900/50">CRITICAL</button>
+                <button onclick="filterBy('HIGH')" id="filter-HIGH" class="filter-btn px-4 py-2 rounded-lg font-mono text-xs border border-red-500/30 bg-red-900/20 text-red-400 hover:bg-red-900/40">HIGH</button>
+                <button onclick="filterBy('MEDIUM')" id="filter-MEDIUM" class="filter-btn px-4 py-2 rounded-lg font-mono text-xs border border-orange-500/30 bg-orange-900/20 text-orange-400 hover:bg-orange-900/40">MEDIUM</button>
+                <button onclick="filterBy('LOW')" id="filter-LOW" class="filter-btn px-4 py-2 rounded-lg font-mono text-xs border border-blue-500/30 bg-blue-900/20 text-blue-400 hover:bg-blue-900/40">LOW</button>
+            </div>
+        </div>
+
+        <!-- Loading -->
+        <div id="loading" class="flex flex-col items-center justify-center py-20">
+            <div class="spinner"></div>
+            <p class="font-mono text-green-400 mt-4 animate-pulse">Fetching threat data...</p>
+        </div>
+
+        <!-- Error -->
+        <div id="error" class="hidden flex flex-col items-center justify-center py-20">
+            <div class="text-6xl mb-4">⚠️</div>
+            <h3 class="font-mono text-xl text-red-500 mb-2">Connection Failed</h3>
+            <button onclick="loadCVEs()" class="mt-4 px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-mono rounded-lg">Retry</button>
+        </div>
+
+        <!-- Grid -->
+        <div id="grid" class="hidden grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mt-8"></div>
+    </main>
+
+    <script>
+        var allCVEs = [];
+        var currentFilter = 'ALL';
+
+        function formatDate(d) {
+            if (!d) return 'N/A';
+            var date = new Date(d);
+            return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+        }
+
+        function getSeverityClass(sev) {
+            var s = (sev || '').toUpperCase();
+            if (s === 'CRITICAL' || s === 'HIGH') return 'bg-red-900/50 text-red-400 border-red-500/50';
+            if (s === 'MEDIUM') return 'bg-orange-900/30 text-orange-400 border-orange-500/30';
+            return 'bg-blue-900/30 text-blue-400 border-blue-500/30';
+        }
+
+        function getCVSSColor(score) {
+            var n = parseFloat(score) || 0;
+            if (n >= 9) return 'text-red-500';
+            if (n >= 7) return 'text-orange-500';
+            if (n >= 4) return 'text-yellow-500';
+            return 'text-green-500';
+        }
+
+        function sortByDate(cves) {
+            return cves.slice().sort(function(a, b) {
+                var dateA = new Date(a.published_date || 0);
+                var dateB = new Date(b.published_date || 0);
+                return dateB - dateA;
+            });
+        }
+
+        function filterBy(severity) {
+            currentFilter = severity;
+            // Update button styles
+            document.querySelectorAll('.filter-btn').forEach(function(btn) {
+                btn.classList.remove('active', 'bg-green-400', 'text-black');
+            });
+            var activeBtn = document.getElementById('filter-' + severity);
+            if (activeBtn) {
+                activeBtn.classList.add('active', 'bg-green-400', 'text-black');
+            }
+            applyFilters();
+        }
+
+        function applyFilters() {
+            var q = document.getElementById('search').value.toLowerCase();
+            var filtered = allCVEs;
+
+            // Apply severity filter
+            if (currentFilter !== 'ALL') {
+                filtered = filtered.filter(function(cve) {
+                    return (cve.severity || '').toUpperCase() === currentFilter;
+                });
+            }
+
+            // Apply search filter
+            if (q) {
+                filtered = filtered.filter(function(cve) {
+                    var id = (cve.cve_id || '').toLowerCase();
+                    var cwe = (cve.cwe_id || '').toLowerCase();
+                    var desc = (cve.description || '').toLowerCase();
+                    return id.indexOf(q) !== -1 || cwe.indexOf(q) !== -1 || desc.indexOf(q) !== -1;
+                });
+            }
+
+            render(sortByDate(filtered));
+        }
+
+        function createCard(cve) {
+            var id = cve.cve_id || 'Unknown';
+            var cwe = cve.cwe_id || '';
+            var score = cve.cvss_score || 'N/A';
+            var sev = cve.severity || 'Unknown';
+            var date = formatDate(cve.published_date);
+            var desc = cve.description || 'No description.';
+            var link = cve.source_link || '#';
+
+            return '<div class="card bg-gray-900 border border-gray-700 rounded-xl p-5 hover:border-green-400/50 transition-all">' +
+                '<div class="flex justify-between items-start mb-3">' +
+                    '<h3 class="font-mono text-lg font-bold text-green-400">' + id + '</h3>' +
+                    '<span class="font-mono text-xs text-gray-500">' + date + '</span>' +
+                '</div>' +
+                '<div class="flex flex-wrap gap-2 mb-3">' +
+                    '<span class="px-2 py-1 rounded text-xs font-mono border ' + getSeverityClass(sev) + '">' + sev.toUpperCase() + '</span>' +
+                    '<span class="px-2 py-1 rounded text-xs font-mono bg-gray-800 border border-gray-600">CVSS: <span class="' + getCVSSColor(score) + '">' + score + '</span></span>' +
+                    (cwe ? '<span class="px-2 py-1 rounded text-xs font-mono bg-gray-800 border border-gray-600">' + cwe + '</span>' : '') +
+                '</div>' +
+                '<p class="text-sm text-gray-400 mb-4 line-clamp-3">' + desc + '</p>' +
+                '<a href="' + link + '" target="_blank" class="inline-flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-green-400 hover:text-black border border-gray-600 hover:border-green-400 rounded-lg text-sm font-mono transition-all">' +
+                    'View on NVD →' +
+                '</a>' +
+            '</div>';
+        }
+
+        function render(cves) {
+            var grid = document.getElementById('grid');
+            if (cves.length === 0) {
+                grid.innerHTML = '<p class="col-span-full text-center text-gray-500 font-mono py-10">No CVEs found.</p>';
+            } else {
+                grid.innerHTML = cves.map(createCard).join('');
+            }
+            grid.classList.remove('hidden');
+        }
+
+        function loadCVEs() {
+            var loading = document.getElementById('loading');
+            var error = document.getElementById('error');
+            var grid = document.getElementById('grid');
+            var count = document.getElementById('cve-count');
+
+            loading.classList.remove('hidden');
+            error.classList.add('hidden');
+            grid.classList.add('hidden');
+
+            fetch('http://127.0.0.1:8080/api/cves')
+                .then(function(res) { return res.json(); })
+                .then(function(data) {
+                    allCVEs = data || [];
+                    allCVEs = sortByDate(allCVEs);
+                    loading.classList.add('hidden');
+                    count.innerHTML = '<span class="text-green-400">' + allCVEs.length + '</span> CVEs Loaded';
+                    render(allCVEs);
+                })
+                .catch(function(err) {
+                    console.error(err);
+                    loading.classList.add('hidden');
+                    error.classList.remove('hidden');
+                    count.innerHTML = '<span class="text-red-500">Error</span>';
+                });
+        }
+
+        document.getElementById('search').addEventListener('input', function(e) {
+            applyFilters();
+        });
+
+        loadCVEs();
+    </script>
+</body>
+</html>
