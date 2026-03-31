@@ -190,7 +190,7 @@
             error.classList.add('hidden');
             grid.classList.add('hidden');
 
-            fetch('http://127.0.0.1:8080/api/cves')
+            fetch('/api/cves')
                 .then(function(res) { return res.json(); })
                 .then(function(data) {
                     allCVEs = data || [];
