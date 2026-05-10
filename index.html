@@ -72,11 +72,21 @@
 
         <!-- Grid -->
         <div id="grid" class="hidden grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mt-8"></div>
+        <div id="load-more-wrap" class="hidden flex justify-center mt-8">
+            <button onclick="loadCVEs(false)" id="load-more"
+                class="px-6 py-3 bg-gray-800 hover:bg-green-400 hover:text-black border border-gray-600 hover:border-green-400 rounded-lg text-sm font-mono transition-all">
+                Load More
+            </button>
+        </div>
     </main>
 
     <script>
         var allCVEs = [];
         var currentFilter = 'ALL';
+        var nextToken = '';
+        var hasMore = false;
+        var isLoading = false;
+        var pageLimit = 50;
 
         function formatDate(d) {
             if (!d) return 'N/A';
@@ -180,30 +190,71 @@
             grid.classList.remove('hidden');
         }
 
-        function loadCVEs() {
+        function updateLoadMore() {
+            var wrap = document.getElementById('load-more-wrap');
+            var button = document.getElementById('load-more');
+            if (hasMore && nextToken) {
+                wrap.classList.remove('hidden');
+                button.disabled = isLoading;
+                button.textContent = isLoading ? 'Loading...' : 'Load More';
+            } else {
+                wrap.classList.add('hidden');
+            }
+        }
+
+        function loadCVEs(reset) {
+            if (isLoading) return;
+            if (reset !== false) {
+                allCVEs = [];
+                nextToken = '';
+                hasMore = false;
+            }
+
             var loading = document.getElementById('loading');
             var error = document.getElementById('error');
             var grid = document.getElementById('grid');
             var count = document.getElementById('cve-count');
 
-            loading.classList.remove('hidden');
-            error.classList.add('hidden');
-            grid.classList.add('hidden');
+            isLoading = true;
+            updateLoadMore();
 
-            fetch('/api/cves')
+            if (allCVEs.length === 0) {
+                loading.classList.remove('hidden');
+            }
+            error.classList.add('hidden');
+            if (allCVEs.length === 0) {
+                grid.classList.add('hidden');
+            }
+
+            var params = new URLSearchParams();
+            params.set('limit', pageLimit);
+            if (nextToken) {
+                params.set('nextToken', nextToken);
+            }
+
+            fetch('/api/cves?' + params.toString())
                 .then(function(res) { return res.json(); })
                 .then(function(data) {
-                    allCVEs = data || [];
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    allCVEs = allCVEs.concat(data.value || []);
                     allCVEs = sortByDate(allCVEs);
+                    nextToken = data.nextToken || '';
+                    hasMore = !!data.hasMore && !!nextToken;
                     loading.classList.add('hidden');
-                    count.innerHTML = '<span class="text-green-400">' + allCVEs.length + '</span> CVEs Loaded';
-                    render(allCVEs);
+                    count.innerHTML = '<span class="text-green-400">' + allCVEs.length + '</span> CVEs Loaded' + (hasMore ? ' / More available' : '');
+                    applyFilters();
                 })
                 .catch(function(err) {
                     console.error(err);
                     loading.classList.add('hidden');
                     error.classList.remove('hidden');
                     count.innerHTML = '<span class="text-red-500">Error</span>';
+                })
+                .finally(function() {
+                    isLoading = false;
+                    updateLoadMore();
                 });
         }
 
@@ -211,7 +262,7 @@
             applyFilters();
         });
 
-        loadCVEs();
+        loadCVEs(true);
     </script>
 </body>
 </html>

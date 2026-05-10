@@ -1,14 +1,23 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const apiURL = "https://959ace9c3696e782907cc55f745072.82.environment.api.powerplatform.com/powerautomate/automations/direct/workflows/869cde8a8c084ddb8f871a560caee5a2/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=_PCOBWWmhGSx8881tc57qpawRkQuNHCWWj0TXtHwa3k"
+const defaultFilterString = "cr224_cve_id ne null"
+const defaultPageLimit = 50
+const maxPageLimit = 500
+
+var apiClient = &http.Client{Timeout: 45 * time.Second}
 
 type CVE struct {
 	CVEID         string  `json:"cve_id"`
@@ -21,15 +30,48 @@ type CVE struct {
 }
 
 type APIResponse struct {
-	Value []map[string]interface{} `json:"value"`
+	Value         []map[string]interface{} `json:"value"`
+	ODataNextLink string                   `json:"@odata.nextLink"`
+	NextLink      string                   `json:"nextLink"`
+	NextToken     string                   `json:"nextToken"`
+}
+
+type PowerAutomateRequest struct {
+	FilterString string `json:"filterString"`
+	Limit        int    `json:"limit"`
+	NextToken    string `json:"nextToken,omitempty"`
+}
+
+type CVEPage struct {
+	Value     []CVE  `json:"value"`
+	NextToken string `json:"nextToken,omitempty"`
+	HasMore   bool   `json:"hasMore"`
 }
 
 func fetchCVEs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	// POST to Power Platform API
-	resp, err := http.Post(apiURL, "application/json", strings.NewReader("{}"))
+	limit := parseLimit(r.URL.Query().Get("limit"))
+	nextToken := strings.TrimSpace(r.URL.Query().Get("nextToken"))
+	filterString := strings.TrimSpace(r.URL.Query().Get("filterString"))
+	if filterString == "" {
+		filterString = defaultFilterString
+	}
+
+	payload, err := json.Marshal(PowerAutomateRequest{
+		FilterString: filterString,
+		Limit:        limit,
+		NextToken:    nextToken,
+	})
+	if err != nil {
+		log.Printf("Error encoding request: %v", err)
+		http.Error(w, `{"error":"Failed to encode request"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// POST pagination inputs to the Power Automate HTTP trigger.
+	resp, err := apiClient.Post(apiURL, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		log.Printf("Error fetching API: %v", err)
 		http.Error(w, `{"error":"Failed to fetch CVE data"}`, http.StatusInternalServerError)
@@ -43,25 +85,14 @@ func fetchCVEs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"Failed to read response"}`, http.StatusInternalServerError)
 		return
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		log.Printf("Power Automate returned %d: %s", resp.StatusCode, string(body[:min(500, len(body))]))
+		http.Error(w, `{"error":"Power Automate returned an error"}`, http.StatusBadGateway)
+		return
+	}
 
 	// Find the first complete JSON object (in case of multiple responses)
-	bodyStr := string(body)
-	depth := 0
-	endIdx := -1
-	for i, c := range bodyStr {
-		if c == '{' {
-			depth++
-		} else if c == '}' {
-			depth--
-			if depth == 0 {
-				endIdx = i + 1
-				break
-			}
-		}
-	}
-	if endIdx > 0 {
-		bodyStr = bodyStr[:endIdx]
-	}
+	bodyStr := firstJSONObject(string(body))
 
 	// Parse API response
 	var apiResp APIResponse
@@ -90,8 +121,14 @@ func fetchCVEs(w http.ResponseWriter, r *http.Request) {
 		cves = append(cves, cve)
 	}
 
-	log.Printf("Successfully fetched %d CVEs", len(cves))
-	json.NewEncoder(w).Encode(cves)
+	page := CVEPage{
+		Value:     cves,
+		NextToken: responseNextToken(apiResp),
+	}
+	page.HasMore = page.NextToken != ""
+
+	log.Printf("Successfully fetched %d CVEs (hasMore=%t)", len(cves), page.HasMore)
+	json.NewEncoder(w).Encode(page)
 }
 
 func getString(m map[string]interface{}, key string) string {
@@ -99,6 +136,66 @@ func getString(m map[string]interface{}, key string) string {
 		return v
 	}
 	return ""
+}
+
+func parseLimit(raw string) int {
+	if raw == "" {
+		return defaultPageLimit
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit <= 0 {
+		return defaultPageLimit
+	}
+	if limit > maxPageLimit {
+		return maxPageLimit
+	}
+	return limit
+}
+
+func firstJSONObject(bodyStr string) string {
+	depth := 0
+	endIdx := -1
+	for i, c := range bodyStr {
+		if c == '{' {
+			depth++
+		} else if c == '}' {
+			depth--
+			if depth == 0 {
+				endIdx = i + 1
+				break
+			}
+		}
+	}
+	if endIdx > 0 {
+		return bodyStr[:endIdx]
+	}
+	return bodyStr
+}
+
+func responseNextToken(apiResp APIResponse) string {
+	if apiResp.NextToken != "" {
+		return apiResp.NextToken
+	}
+	nextLink := apiResp.ODataNextLink
+	if nextLink == "" {
+		nextLink = apiResp.NextLink
+	}
+	if nextLink == "" {
+		return ""
+	}
+
+	parsed, err := url.Parse(nextLink)
+	if err != nil {
+		return nextLink
+	}
+	token := parsed.Query().Get("$skiptoken")
+	if token == "" {
+		token = parsed.Query().Get("skiptoken")
+	}
+	if token == "" {
+		return nextLink
+	}
+	return token
 }
 
 func main() {
