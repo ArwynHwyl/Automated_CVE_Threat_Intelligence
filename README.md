@@ -36,6 +36,7 @@
 * `limit` เอาไว้กำหนดจำนวน row ต่อรอบ
 * `nextToken` ตอนแรกกะใช้กับ Skip token
 * `page` เพิ่มทีหลังตอนเปลี่ยนไปใช้ FetchXML pagination
+* `fetchXml` เพิ่มทีหลังสุด เพราะถ้าเอา dynamic content ไปแทรกกลาง XML ใน Power Automate มันชอบพัง เลยให้ Go ประกอบ FetchXML ทั้งก้อนแล้วส่งเข้า flow ไปเลย
 
 ![HTTP trigger schema](./asset/power-automate-http-schema.png)
 
@@ -71,7 +72,7 @@ cr224_cve_id ne null
 
 สุดท้ายเลยเปลี่ยนแนวคิดจาก `nextToken` เป็นใช้เลขหน้าแทน คือ frontend ส่ง `page=1`, `page=2`, `page=3` ไปเรื่อยๆ แล้วใน Power Automate ให้ `List rows` ใช้ FetchXML Query เป็นตัวจัดหน้าเอง
 
-FetchXML ที่ใช้ใน `List rows`:
+FetchXML ที่ใช้ใน `List rows` ตอนแรกเขียนไว้ใน flow แบบนี้:
 
 ```xml
 <fetch count="@{triggerBody()?['limit']}" page="@{triggerBody()?['page']}">
@@ -92,6 +93,34 @@ FetchXML ที่ใช้ใน `List rows`:
 ```
 
 อันนี้ยังดึงจาก Dataverse เหมือนเดิม แค่เปลี่ยนจากใช้ช่อง Filter rows / Row count / Skip token มาใส่ query ใน FetchXML แทน จะได้คุม `count` กับ `page` ได้ตรงกว่า
+
+ตอนมาแก้ search/filter เพิ่ม ผมลองให้ Go ส่ง `filterString` เป็น FetchXML filter fragment แล้วเอาไปเสียบกลาง XML ใน Power Automate แต่มันดึงบ่ได้ flow ตอบ 502 อีก เลยเปลี่ยนเป็นให้ Go ประกอบ `fetchXml` ทั้งก้อนแล้วส่งเข้า flow ไปเลย
+
+อันนี้คือแบบที่เคยลองแล้วพัง เพราะเอา `filterString` ไปเสียบกลาง XML ใน `Fetch Xml Query`
+
+![Broken FetchXML filter fragment flow](./asset/power-automate-fetchxml-fragment-broken.png)
+
+ใน Power Automate ให้เพิ่ม `fetchXml` ใน Request Body JSON Schema:
+
+```json
+"fetchXml": {
+  "type": "string"
+}
+```
+
+แล้วทำ `Compose` รับ `fetchXml` จาก trigger ก่อน จากนั้นช่อง `Fetch Xml Query` ใน `List rows` ให้ใส่ `Outputs` จาก Compose ตัวเดียวพอ ไม่ต้องเขียน XML ค้างไว้ใน flow แล้ว
+
+ถ้างงว่าก้อน `Compose` คืออะไร ก้อนนี้คือเหมือนถาดพักของที่เราส่งมาจาก Go ก่อนเอาไปให้ `List rows` กินต่อ แบบกวนๆคือ Go ทำข้าวกล่อง FetchXML มาให้เรียบร้อยแล้ว `Compose` แค่รับกล่องไว้ ส่วน `List rows` ก็หยิบกล่องนั้นไปแดก ไม่ต้องมายืนหั่นผักเขียน XML เองกลาง flow อีก
+
+![Final Compose fetchXml flow](./asset/power-automate-compose-fetchxml-final.png)
+
+ถ้าไม่ได้ search อะไร Go จะสร้าง filter ประมาณนี้ใน FetchXML:
+
+```xml
+<filter type="and"><condition attribute="cr224_cve_id" operator="not-null" /></filter>
+```
+
+ถ้ามี search หรือกด filter severity มันก็จะเพิ่ม condition เข้าไปใน fragment นี้ แล้ว Power Automate เอาไปเสียบใน FetchXML ได้เลย
 
 ![Final FetchXML pagination flow](./asset/power-automate-fetchxml-pagination-final.png)
 
@@ -172,7 +201,15 @@ Go proxy มีรับ query พวกนี้ไว้แล้ว:
 /api/cves?limit=50&page=1&severity=CRITICAL
 ```
 
-แต่ว่าหลังเปลี่ยน flow มาใช้ FetchXML แบบ hardcode ใน Power Automate แล้ว search/filter จาก query parameter ยังไม่ได้ถูกเอาไปใช้ใน FetchXML จริงๆ ถ้าจะให้ search จาก Dataverse ทำงานครบ ต้องแก้ต่ออีกนิด เช่นให้ Go สร้าง FetchXML ทั้งก้อนส่งเข้า flow หรือทำ FetchXML ใน flow ให้ dynamic ตาม `filterString`
+ตอนนี้ Go สร้าง `fetchXml` ทั้งก้อนให้แล้ว เพราะงั้นใน Power Automate ต้องเพิ่ม field `fetchXml` ใน trigger schema แล้วเอา dynamic content `fetchXml` ไปใส่ในช่อง Fetch Xml Query ของ `List rows` ถ้า flow ยังใช้ XML hardcode อยู่ search/filter จะยังไม่ทำงานจริง
+
+หลังแก้เป็น `fetchXml -> Compose -> List rows` แล้วเทสผ่าน:
+
+```text
+/api/cves?limit=5&page=1 -> 200 OK
+/api/cves?limit=5&page=1&q=CVE-2026-8219 -> 200 OK, ได้รายการเดียว
+/api/cves?limit=5&page=1&severity=CRITICAL -> 200 OK, ได้เฉพาะ CRITICAL
+```
 
 ### How to run
 

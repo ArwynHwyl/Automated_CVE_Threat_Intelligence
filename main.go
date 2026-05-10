@@ -13,7 +13,6 @@ import (
 )
 
 const apiURL = "https://959ace9c3696e782907cc55f745072.82.environment.api.powerplatform.com/powerautomate/automations/direct/workflows/869cde8a8c084ddb8f871a560caee5a2/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=_PCOBWWmhGSx8881tc57qpawRkQuNHCWWj0TXtHwa3k"
-const defaultFilterString = "cr224_cve_id ne null"
 const defaultPageLimit = 50
 const maxPageLimit = 500
 
@@ -37,6 +36,7 @@ type APIResponse struct {
 
 type PowerAutomateRequest struct {
 	FilterString string `json:"filterString"`
+	FetchXML     string `json:"fetchXml"`
 	Limit        int    `json:"limit"`
 	Page         int    `json:"page"`
 }
@@ -57,9 +57,11 @@ func fetchCVEs(w http.ResponseWriter, r *http.Request) {
 	if filterString == "" {
 		filterString = buildFilterString(r.URL.Query().Get("q"), r.URL.Query().Get("severity"))
 	}
+	fetchXML := buildFetchXML(limit, pageNumber, filterString)
 
 	payload, err := json.Marshal(PowerAutomateRequest{
 		FilterString: filterString,
+		FetchXML:     fetchXML,
 		Limit:        limit,
 		Page:         pageNumber,
 	})
@@ -160,23 +162,54 @@ func parsePage(raw string) int {
 }
 
 func buildFilterString(rawQuery string, rawSeverity string) string {
-	filters := []string{defaultFilterString}
+	var builder strings.Builder
+	builder.WriteString(`<filter type="and">`)
+	builder.WriteString(`<condition attribute="cr224_cve_id" operator="not-null" />`)
+
 	query := strings.TrimSpace(rawQuery)
 	if query != "" {
-		escapedQuery := escapeODataString(query)
-		filters = append(filters, "(contains(cr224_cve_id,'"+escapedQuery+"') or contains(cr224_cwe_id,'"+escapedQuery+"') or contains(cr224_description,'"+escapedQuery+"'))")
+		escapedQuery := escapeXMLAttribute("%" + query + "%")
+		builder.WriteString(`<filter type="or">`)
+		builder.WriteString(`<condition attribute="cr224_cve_id" operator="like" value="` + escapedQuery + `" />`)
+		builder.WriteString(`<condition attribute="cr224_cwe_id" operator="like" value="` + escapedQuery + `" />`)
+		builder.WriteString(`<condition attribute="cr224_description" operator="like" value="` + escapedQuery + `" />`)
+		builder.WriteString(`</filter>`)
 	}
 
 	severity := strings.ToUpper(strings.TrimSpace(rawSeverity))
 	if severity != "" && severity != "ALL" {
-		filters = append(filters, "cr224_severity eq '"+escapeODataString(severity)+"'")
+		builder.WriteString(`<condition attribute="cr224_severity" operator="eq" value="` + escapeXMLAttribute(severity) + `" />`)
 	}
 
-	return strings.Join(filters, " and ")
+	builder.WriteString(`</filter>`)
+	return builder.String()
 }
 
-func escapeODataString(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
+func escapeXMLAttribute(s string) string {
+	replacer := strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+		`"`, "&quot;",
+		"'", "&apos;",
+	)
+	return replacer.Replace(s)
+}
+
+func buildFetchXML(limit int, page int, filterString string) string {
+	return `<fetch count="` + strconv.Itoa(limit) + `" page="` + strconv.Itoa(page) + `">
+  <entity name="cr224_cve_feed">
+    <attribute name="cr224_cve_id" />
+    <attribute name="cr224_cwe_id" />
+    <attribute name="cr224_cvss_score" />
+    <attribute name="cr224_severity" />
+    <attribute name="cr224_published_date" />
+    <attribute name="cr224_description" />
+    <attribute name="cr224_source_link" />
+    <order attribute="cr224_published_date" descending="true" />
+    ` + filterString + `
+  </entity>
+</fetch>`
 }
 
 func firstJSONObject(bodyStr string) string {
