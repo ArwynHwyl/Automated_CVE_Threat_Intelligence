@@ -6,7 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -30,22 +30,21 @@ type CVE struct {
 }
 
 type APIResponse struct {
-	Value         []map[string]interface{} `json:"value"`
-	ODataNextLink string                   `json:"@odata.nextLink"`
-	NextLink      string                   `json:"nextLink"`
-	NextToken     string                   `json:"nextToken"`
+	Value    []map[string]interface{} `json:"value"`
+	NextPage int                      `json:"nextPage"`
+	HasMore  bool                     `json:"hasMore"`
 }
 
 type PowerAutomateRequest struct {
 	FilterString string `json:"filterString"`
 	Limit        int    `json:"limit"`
-	NextToken    string `json:"nextToken,omitempty"`
+	Page         int    `json:"page"`
 }
 
 type CVEPage struct {
-	Value     []CVE  `json:"value"`
-	NextToken string `json:"nextToken,omitempty"`
-	HasMore   bool   `json:"hasMore"`
+	Value    []CVE `json:"value"`
+	NextPage int   `json:"nextPage,omitempty"`
+	HasMore  bool  `json:"hasMore"`
 }
 
 func fetchCVEs(w http.ResponseWriter, r *http.Request) {
@@ -53,16 +52,16 @@ func fetchCVEs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	limit := parseLimit(r.URL.Query().Get("limit"))
-	nextToken := strings.TrimSpace(r.URL.Query().Get("nextToken"))
+	pageNumber := parsePage(r.URL.Query().Get("page"))
 	filterString := strings.TrimSpace(r.URL.Query().Get("filterString"))
 	if filterString == "" {
-		filterString = defaultFilterString
+		filterString = buildFilterString(r.URL.Query().Get("q"), r.URL.Query().Get("severity"))
 	}
 
 	payload, err := json.Marshal(PowerAutomateRequest{
 		FilterString: filterString,
 		Limit:        limit,
-		NextToken:    nextToken,
+		Page:         pageNumber,
 	})
 	if err != nil {
 		log.Printf("Error encoding request: %v", err)
@@ -122,12 +121,12 @@ func fetchCVEs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	page := CVEPage{
-		Value:     cves,
-		NextToken: responseNextToken(apiResp),
+		Value:    cves,
+		NextPage: apiResp.NextPage,
+		HasMore:  apiResp.HasMore,
 	}
-	page.HasMore = page.NextToken != ""
 
-	log.Printf("Successfully fetched %d CVEs (hasMore=%t)", len(cves), page.HasMore)
+	log.Printf("Successfully fetched %d CVEs (page=%d, nextPage=%d, hasMore=%t)", len(cves), pageNumber, page.NextPage, page.HasMore)
 	json.NewEncoder(w).Encode(page)
 }
 
@@ -152,6 +151,34 @@ func parseLimit(raw string) int {
 	return limit
 }
 
+func parsePage(raw string) int {
+	page, err := strconv.Atoi(raw)
+	if err != nil || page <= 0 {
+		return 1
+	}
+	return page
+}
+
+func buildFilterString(rawQuery string, rawSeverity string) string {
+	filters := []string{defaultFilterString}
+	query := strings.TrimSpace(rawQuery)
+	if query != "" {
+		escapedQuery := escapeODataString(query)
+		filters = append(filters, "(contains(cr224_cve_id,'"+escapedQuery+"') or contains(cr224_cwe_id,'"+escapedQuery+"') or contains(cr224_description,'"+escapedQuery+"'))")
+	}
+
+	severity := strings.ToUpper(strings.TrimSpace(rawSeverity))
+	if severity != "" && severity != "ALL" {
+		filters = append(filters, "cr224_severity eq '"+escapeODataString(severity)+"'")
+	}
+
+	return strings.Join(filters, " and ")
+}
+
+func escapeODataString(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
 func firstJSONObject(bodyStr string) string {
 	depth := 0
 	endIdx := -1
@@ -172,32 +199,6 @@ func firstJSONObject(bodyStr string) string {
 	return bodyStr
 }
 
-func responseNextToken(apiResp APIResponse) string {
-	if apiResp.NextToken != "" {
-		return apiResp.NextToken
-	}
-	nextLink := apiResp.ODataNextLink
-	if nextLink == "" {
-		nextLink = apiResp.NextLink
-	}
-	if nextLink == "" {
-		return ""
-	}
-
-	parsed, err := url.Parse(nextLink)
-	if err != nil {
-		return nextLink
-	}
-	token := parsed.Query().Get("$skiptoken")
-	if token == "" {
-		token = parsed.Query().Get("skiptoken")
-	}
-	if token == "" {
-		return nextLink
-	}
-	return token
-}
-
 func main() {
 	// Serve static files
 	http.Handle("/", http.FileServer(http.Dir(".")))
@@ -205,6 +206,11 @@ func main() {
 	// API endpoint
 	http.HandleFunc("/api/cves", fetchCVEs)
 
-	log.Println("Server running at http://localhost:8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	log.Printf("Server running at http://localhost:%s", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
